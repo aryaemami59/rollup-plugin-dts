@@ -320,6 +320,21 @@ function fixModifiers(code: MagicString, node: ts.Node) {
   if (!ts.canHaveModifiers(node)) {
     return;
   }
+  if (ts.isVariableStatement(node)) {
+    const modifier = node.modifiers?.[0];
+    const declaration = node.declarationList.declarations[0];
+    if (
+      modifier &&
+      modifier.kind === ts.SyntaxKind.ExportKeyword &&
+      declaration &&
+      ts.isIdentifier(declaration.name) &&
+      declaration.type &&
+      ts.isTypeOperatorNode(declaration.type) &&
+      declaration.type.operator === ts.SyntaxKind.UniqueKeyword
+    ) {
+      return;
+    }
+  }
   let hasDeclare = false;
   const needsDeclare =
     ts.isEnumDeclaration(node) ||

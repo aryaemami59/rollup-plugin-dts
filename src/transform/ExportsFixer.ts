@@ -3,47 +3,54 @@ import ts from "typescript";
 type NamedExport = {
   localName: string;
   exportedName: string;
-  kind: 'type' | 'value';
+  kind: "type" | "value" | "unique-symbol";
 };
 type ExportDeclaration = {
   location: {
     start: number;
     end: number;
   };
-  exports: Array<NamedExport>
-}
+  exports: Array<NamedExport>;
+};
 
 export class ExportsFixer {
-  private readonly DEBUG = !!(process.env.DTS_EXPORTS_FIXER_DEBUG);
+  private readonly DEBUG = !!process.env.DTS_EXPORTS_FIXER_DEBUG;
   constructor(private readonly source: ts.SourceFile) {}
 
   public fix(): string {
     const exports = this.findExports();
     exports.sort((a, b) => a.location.start - b.location.start);
-    return this.getCodeParts(exports).join('');
+    return this.getCodeParts(exports).join("");
   }
 
   private findExports(): Array<ExportDeclaration> {
-    const { rawExports, values, types} = this.getExportsAndLocals();
+    const { rawExports, values, types, uniqueSymbols } = this.getExportsAndLocals();
 
     return rawExports.map((rawExport) => {
-      const elements = rawExport.elements.map((e) => {
-        const exportedName = e.name.text;
-        const localName = e.propertyName?.text ?? e.name.text;
-        const kind = types.some(node => node.getText() === localName) && !values.some(node => node.getText() === localName) ? 'type' as const : 'value' as const;
-        this.DEBUG && (console.log(`export ${localName} as ${exportedName} is a ${kind}`));
-        return {
-          exportedName,
-          localName,
-          kind
-        }
-      })
+      const elements = rawExport.elements
+        .filter((e) => !uniqueSymbols.map((f) => f.getText()).includes(e.getText()))
+        .map((e) => {
+          const exportedName = e.name.text;
+          const localName = e.propertyName?.text ?? e.name.text;
+          const kind =
+            types.some((node) => node.getText() === localName) && !values.some((node) => node.getText() === localName)
+              ? ("type" as const)
+              : // : uniqueSymbols.some((node) => node.getText() === localName)
+                // ? ("unique-symbol" as const)
+                ("value" as const);
+          this.DEBUG && console.log(`export ${localName} as ${exportedName} is a ${kind}`);
+          return {
+            exportedName,
+            localName,
+            kind,
+          };
+        });
       return {
         location: {
           start: rawExport.getStart(),
           end: rawExport.getEnd(),
         },
-        exports: elements
+        exports: elements,
       };
     });
   }
@@ -52,12 +59,19 @@ export class ExportsFixer {
     const rawExports: Array<ts.NamedExports> = [];
     const values: Array<ts.Identifier> = [];
     const types: Array<ts.Identifier> = [];
+    const uniqueSymbols: Array<ts.Identifier> = [];
 
     const recurseInto = (subStatements: Iterable<ts.Node>) => {
-      const { rawExports: subExports, values: subValues, types: subTypes} = this.getExportsAndLocals(subStatements);
+      const {
+        rawExports: subExports,
+        values: subValues,
+        types: subTypes,
+        uniqueSymbols: subUniqueSymbols,
+      } = this.getExportsAndLocals(subStatements);
       rawExports.push(...subExports);
       values.push(...subValues);
       types.push(...subTypes);
+      uniqueSymbols.push(...subUniqueSymbols);
     };
 
     for (const statement of statements) {
@@ -79,8 +93,17 @@ export class ExportsFixer {
         if (ts.isVariableStatement(statement)) {
           for (const declaration of statement.declarationList.declarations) {
             if (ts.isIdentifier(declaration.name)) {
-              this.DEBUG && console.log(`${declaration.name.getFullText()} is a value (from var statement)`);
-              values.push(declaration.name);
+              if (
+                declaration.type?.kind === ts.SyntaxKind.TypeOperator &&
+                ts.isTypeOperatorNode(declaration.type) &&
+                declaration.type.operator === ts.SyntaxKind.UniqueKeyword
+              ) {
+                uniqueSymbols.push(declaration.name);
+                // break;
+              } else {
+                this.DEBUG && console.log(`${declaration.name.getFullText()} is a value (from var statement)`);
+                values.push(declaration.name);
+              }
             }
           }
         } else {
@@ -119,13 +142,21 @@ export class ExportsFixer {
         rawExports.push(exportClause);
         continue;
       }
-      this.DEBUG && console.log('unhandled statement', statement.getFullText(), statement.kind);
+      this.DEBUG && console.log("unhandled statement", statement.getFullText(), statement.kind);
     }
-    return { rawExports, values, types };
+
+    return {
+      rawExports,
+      values,
+      types,
+      uniqueSymbols,
+    };
   }
 
   private createNamedExport(exportSpec: NamedExport, elideType = false) {
-    return `${!elideType && exportSpec.kind === 'type' ? 'type ' : ''}${exportSpec.localName}${exportSpec.localName === exportSpec.exportedName ? '' : ` as ${exportSpec.exportedName}`}`;
+    return `${!elideType && exportSpec.kind === "type" ? "type " : ""}${exportSpec.localName}${
+      exportSpec.localName === exportSpec.exportedName ? "" : ` as ${exportSpec.exportedName}`
+    }`;
   }
 
   private getCodeParts(exports: Array<ExportDeclaration>) {
@@ -148,7 +179,10 @@ export class ExportsFixer {
   }
 
   private getExportStatement(exportDeclaration: ExportDeclaration) {
-    const isTypeOnly = exportDeclaration.exports.every((e) => e.kind === 'type') && exportDeclaration.exports.length > 0;
-    return `${isTypeOnly ? 'type ' : ''}{ ${exportDeclaration.exports.map((exp) => this.createNamedExport(exp, isTypeOnly)).join(', ')} }`
+    const isTypeOnly =
+      exportDeclaration.exports.every((e) => e.kind === "type") && exportDeclaration.exports.length > 0;
+    return `${isTypeOnly ? "type " : ""}{ ${exportDeclaration.exports
+      .map((exp) => this.createNamedExport(exp, isTypeOnly))
+      .join(", ")} }`;
   }
 }
